@@ -2,50 +2,59 @@ import subprocess
 import re
 import requests
 from datetime import datetime
+from ipwhois import IPWhois
+import requests
+import subprocess
 
 LOG_PATH = "/var/log/auth.log"  # unused now but can be used for tail -F method
 ABUSEIPDB_API_KEY = ""  # Optional API Key
 scanned_ips = set()
+def whois_lookup(ip):
+    try:
+        obj = IPWhois(ip)
+        result = obj.lookup_rdap()
+        return result.get("network", {}).get("name", "Unknown Org")
+    except Exception as e:
+        return f"Whois lookup failed: {e}"
 
+def geolocate_ip(ip):
+    try:
+        res = requests.get(f"https://ipinfo.io/{ip}/json")
+        data = res.json()
+        return f"{data.get('city', '')}, {data.get('region', '')}, {data.get('country', '')}"
+    except Exception as e:
+        return f"Geo lookup failed: {e}"
+
+def nmap_scan(ip):
+    try:
+        cmd = f"nmap -A -T4 {ip}" if ":" not in ip else f"nmap -6 -A -T4 {ip}"
+        return subprocess.getoutput(cmd)
+    except Exception as e:
+        return f"Nmap scan failed: {e}"
+
+def check_abuseipdb(ip):
+    try:
+        response = requests.get(
+            "https://api.abuseipdb.com/api/v2/check",
+            params={"ipAddress": ip, "maxAgeInDays": 90},
+            headers={"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"}
+        )
+        data = response.json()
+        return data.get("data", {}).get("abuseConfidenceScore", "No data")
+    except Exception as e:
+        return f"AbuseIPDB lookup failed: {e}"
 def scan_ip(ip):
     print(f"\n[+] Scanning IP: {ip}")
 
-    # Skip localhost or already scanned
+    # Skip localhost
     if ip in ["127.0.0.1", "::1"]:
         print("[!] Skipping scan: Localhost IP")
         return
 
-    print("\n[>] Fetching Geo Info...")
-    geo = requests.get(f"http://ipinfo.io/{ip}/json").json()
-    print(geo)
-
-    if geo.get("bogon"):
-        print("[!] Skipping scan: Bogon/Private IP")
-        return
-
-    print("\n[>] Running Nmap Scan...")
-    if ":" in ip:
-        nmap_result = subprocess.getoutput(f"nmap -6 -A -T4 {ip}")
-    else:
-        nmap_result = subprocess.getoutput(f"nmap -A -T4 {ip}")
-    print(nmap_result)
-
-    if ABUSEIPDB_API_KEY:
-        print("\n[>] Checking AbuseIPDB...")
-        abuse = requests.get(
-            "https://api.abuseipdb.com/api/v2/check",
-            params={"ipAddress": ip, "maxAgeInDays": 90},
-            headers={"Key": ABUSEIPDB_API_KEY, "Accept": "application/json"}
-        ).json()
-        print(abuse)
-
-    # Optional: Block IP
-    print(f"[!] Blocking IP {ip} using iptables...")
-    subprocess.run(["iptables", "-A", "INPUT", "-s", ip, "-j", "DROP"])
-
-    # Log to file
-    with open("detection.log", "a") as log:
-        log.write(f"[{datetime.now()}] Blocked brute-force attempt from {ip}\n")
+    print("[+] Whois Info:", whois_lookup(ip))
+    print("[+] Geolocation:", geolocate_ip(ip))
+    print("[+] Nmap Scan:\n", nmap_scan(ip))
+    print("[+] AbuseIPDB:", check_abuseipdb(ip))
 
 
 def monitor_log():
